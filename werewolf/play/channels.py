@@ -13,7 +13,7 @@ from autogen_agentchat.messages import BaseAgentEvent, BaseChatMessage, StopMess
 from autogen_agentchat.teams import RoundRobinGroupChat, SelectorGroupChat
 from autogen_core.models import ChatCompletionClient
 
-from werewolf.parse import parse_action
+from werewolf.game.parse import parse_action
 
 
 class SeatOrder:

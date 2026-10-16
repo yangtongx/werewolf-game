@@ -25,9 +25,9 @@ from autogen_core.models import (
 from autogen_core.tools import Tool, ToolSchema
 from pydantic import BaseModel
 
-from werewolf.parse import canonicalize, parse_id_list
-from werewolf.vendors import Vendor
-from werewolf.prompts import (
+from werewolf.game.parse import canonicalize, parse_id_list
+from werewolf.play.vendors import Vendor
+from werewolf.play.prompts import (
     CHANNEL_GUARD,
     CHANNEL_HUNTER,
     CHANNEL_PUBLIC,

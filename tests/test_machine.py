@@ -2,18 +2,18 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from werewolf.actions import resolve_target
-from werewolf.machine import (
+from werewolf.game.actions import resolve_target
+from werewolf.game.machine import (
     CAUSE_POISON,
     CAUSE_WOLF,
     GameMachine,
     Role,
 )
-from werewolf.parse import parse_action
-from werewolf.prompts import audit_leaks, public_talk_task, system_prompt, wolf_task
-from werewolf.model_client import build_seat_clients
-from werewolf.rules import Rules, load_rules
-from werewolf.vendors import Vendor, assign_vendors, load_vendors
+from werewolf.game.parse import parse_action
+from werewolf.play.prompts import audit_leaks, public_talk_task, system_prompt, wolf_task
+from werewolf.play.model_client import build_seat_clients
+from werewolf.game.rules import Rules, load_rules
+from werewolf.play.vendors import Vendor, assign_vendors, load_vendors
 
 
 def board(*roles: str) -> GameMachine:

@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import asdict, dataclass
 
-from werewolf.parse import Action, parse_action
+from werewolf.game.parse import Action, parse_action
 
 _BREAK = re.compile(
     r"我是\s*AI|作为(?:一个)?(?:AI|人工智能|语言模型)|系统提示|我是语言模型|根据规则我",

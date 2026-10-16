@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from werewolf.machine import PRESETS
-from werewolf.vendors import Vendor, load_vendors
+from werewolf.game.machine import PRESETS
+from werewolf.play.vendors import Vendor, load_vendors
 
-_PAGE = Path(__file__).resolve().parent / "web" / "index.html"
+_PAGE = Path(__file__).resolve().parent / "index.html"
 _TABLES: dict[str, "Table"] = {}
 _LOCK = threading.Lock()
 _MAX_BODY = 32_000
@@ -297,7 +297,7 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 def _play(table: Table, assignment: dict[str, Vendor], keys: dict[str, str]) -> None:
     import asyncio
 
-    from werewolf.director import play_match
+    from werewolf.play.director import play_match
 
     secrets_used = [value for value in keys.values() if value]
     if table.mock:

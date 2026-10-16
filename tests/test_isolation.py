@@ -3,10 +3,10 @@ import unittest
 
 from autogen_core.models import AssistantMessage, SystemMessage, UserMessage
 
-from werewolf.director import GodDirector, build_players, play_match
-from werewolf.machine import CAUSE_POISON, GameMachine, Role
-from werewolf.model_client import ScriptedWerewolfClient
-from werewolf.prompts import PRIVATE_MARKERS, assert_public, audit_leaks
+from werewolf.play.director import GodDirector, build_players, play_match
+from werewolf.game.machine import CAUSE_POISON, GameMachine, Role
+from werewolf.play.model_client import ScriptedWerewolfClient
+from werewolf.play.prompts import PRIVATE_MARKERS, assert_public, audit_leaks
 
 
 class ChannelIsolationTests(unittest.IsolatedAsyncioTestCase):

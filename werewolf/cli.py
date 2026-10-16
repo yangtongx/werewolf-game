@@ -10,10 +10,10 @@ import os
 import sys
 from pathlib import Path
 
-from werewolf.director import play_match
-from werewolf.machine import PRESETS
-from werewolf.rules import load_rules
-from werewolf.vendors import load_vendors
+from werewolf.play.director import play_match
+from werewolf.game.machine import PRESETS
+from werewolf.game.rules import load_rules
+from werewolf.play.vendors import load_vendors
 
 
 def main(argv: list[str] | None = None) -> None:

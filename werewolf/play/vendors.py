@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from werewolf.rules import _load_simple_yaml
+from werewolf.game.rules import _load_simple_yaml
 
 
 @dataclass(frozen=True)

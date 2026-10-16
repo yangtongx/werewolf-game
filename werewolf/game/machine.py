@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
-from werewolf.rules import Rules
+from werewolf.game.rules import Rules
 
 
 class Role(str, Enum):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from werewolf.machine import Player, Role, role_label
+from werewolf.game.machine import Player, Role, role_label
 
 CHANNEL_WOLF = "狼人群"
 CHANNEL_PUBLIC = "全体公聊"

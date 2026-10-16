@@ -17,12 +17,12 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_core.models import ChatCompletionClient, UserMessage
 
-from werewolf.actions import ActionRecord, resolve_target
-from werewolf.channels import open_public_talk, open_wolf_meeting
-from werewolf.machine import Death, GameMachine, Role, role_label, seat_key
-from werewolf.model_client import build_seat_clients, close_clients
-from werewolf.parse import parse_action
-from werewolf.prompts import (
+from werewolf.game.actions import ActionRecord, resolve_target
+from werewolf.play.channels import open_public_talk, open_wolf_meeting
+from werewolf.game.machine import Death, GameMachine, Role, role_label, seat_key
+from werewolf.play.model_client import build_seat_clients, close_clients
+from werewolf.game.parse import parse_action
+from werewolf.play.prompts import (
     assert_public,
     audit_leaks,
     guard_task,
@@ -38,9 +38,9 @@ from werewolf.prompts import (
     witch_task,
     wolf_task,
 )
-from werewolf.rules import Rules
-from werewolf.seat import SeatAgent
-from werewolf.vendors import Vendor, assign_vendors, default_vendors
+from werewolf.game.rules import Rules
+from werewolf.play.seat import SeatAgent
+from werewolf.play.vendors import Vendor, assign_vendors, default_vendors
 
 Printer = Callable[[str], None]
 

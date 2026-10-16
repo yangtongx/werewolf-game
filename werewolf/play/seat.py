@@ -10,7 +10,7 @@ from autogen_agentchat.messages import BaseChatMessage, TextMessage
 from autogen_core import CancellationToken
 from autogen_core.model_context import ChatCompletionContext
 
-from werewolf.actions import sanitize_speech
+from werewolf.game.actions import sanitize_speech
 
 
 class SeatAgent(BaseChatAgent):
