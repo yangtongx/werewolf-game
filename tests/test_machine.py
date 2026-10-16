@@ -1,0 +1,243 @@
+import unittest
+from pathlib import Path
+
+from werewolf.actions import resolve_target
+from werewolf.machine import (
+    CAUSE_POISON,
+    CAUSE_WOLF,
+    GameMachine,
+    Role,
+)
+from werewolf.parse import parse_action
+from werewolf.prompts import public_talk_task, wolf_task
+from werewolf.rules import Rules, load_rules
+
+
+def board(*roles: str) -> GameMachine:
+    return GameMachine([Role(role) for role in roles])
+
+
+class ParseTests(unittest.TestCase):
+    def test_last_action_wins_and_accepts_seat_aliases(self):
+        text = "先随便说说。\n[ACTION] kill=p1\n改主意了\n[ACTION] kill=3号 save=yes poison=none"
+        action = parse_action(text)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.kill, "p3")
+        self.assertTrue(action.save)
+        self.assertIsNone(action.poison)
+
+    def test_vote_abstain(self):
+        action = parse_action("[ACTION] vote=abstain")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertTrue(action.vote_abstain)
+        self.assertIsNone(action.vote)
+
+    def test_missing_action(self):
+        self.assertIsNone(parse_action("我还在想。"))
+
+    def test_last_action_survives_markup_and_pass(self):
+        text = "例如：\n```\n[ACTION] kill=p1\n```\n最终是 **[ACTION] kill=p8**"
+        action = parse_action(text)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.kill, "p8")
+        self.assertGreater(action.match_count, 1)
+        passed = parse_action("先不说。\n[ACTION] pass")
+        self.assertIsNotNone(passed)
+        assert passed is not None
+        self.assertTrue(passed.passed)
+
+    def test_illegal_action_falls_back_without_raising(self):
+        target, record = resolve_target(
+            "我随便写 [ACTION] guard=p9",
+            player_id="p5",
+            phase="guard",
+            legal_ids=["p1", "p2"],
+            rng=__import__("random").Random(1),
+            fallback="pass",
+        )
+        self.assertIsNone(target)
+        self.assertTrue(record.degraded)
+        self.assertEqual(record.applied, "pass")
+        target, record = resolve_target(
+            "没有行动",
+            player_id="p5",
+            phase="guard",
+            legal_ids=["p1", "p2"],
+            rng=__import__("random").Random(1),
+            fallback="random",
+        )
+        self.assertIn(target, {"p1", "p2"})
+        self.assertEqual(record.fallback, "random")
+
+    def test_same_guard_and_witch_can_be_configured_to_live(self):
+        game = board("werewolf", "werewolf", "villager", "witch", "guard", "villager")
+        game.rules = Rules(guard_witch_same_target="live")
+        game.begin_night()
+        game.apply_guard("p5", "p6")
+        game.apply_wolf_votes({"p1": "p6", "p2": "p6"})
+        game.apply_witch(True, None)
+        deaths, notes = game.resolve_night()
+        self.assertEqual(deaths, [])
+        self.assertTrue(any("存活" in note for note in notes))
+
+    def test_slaughter_side_wins_when_the_village_side_is_gone(self):
+        roles = ("werewolf", "werewolf", "seer", "villager", "villager", "villager")
+        side = board(*roles)
+        side.rules = Rules(win_condition="slaughter_side")
+        side.begin_night()
+        side.apply_wolf_votes({"p1": "p3", "p2": "p3"})
+        side.resolve_night()
+        self.assertEqual(side.update_winner(), "werewolf")
+
+        town = board(*roles)
+        town.begin_night()
+        town.apply_wolf_votes({"p1": "p3", "p2": "p3"})
+        town.resolve_night()
+        self.assertIsNone(town.update_winner())
+
+    def test_pk_returns_the_tied_seats_once(self):
+        game = board("werewolf", "villager", "villager")
+        game.rules = Rules(vote_tie="pk")
+        outcome = game.resolve_vote({"p1": "p2", "p2": "p1"})
+        self.assertEqual(set(outcome.tied_ids), {"p1", "p2"})
+        self.assertTrue(game.player("p1").alive)
+        again = game.resolve_vote({"p1": "p2", "p2": "p1"}, allowed={"p1", "p2"}, final=True)
+        self.assertIsNone(again.death)
+        self.assertEqual(again.tied_ids, [])
+
+    def test_config_file_loads_the_explicit_rules(self):
+        rules = load_rules(Path(__file__).resolve().parents[1] / "config.yaml")
+        self.assertEqual(rules.guard_witch_same_target, "die")
+        self.assertEqual(rules.win_condition, "slaughter_town")
+        self.assertEqual(rules.vote_tie, "no_exile")
+        self.assertFalse(rules.hunter_poison_shoot)
+
+
+class MachineTests(unittest.TestCase):
+    def test_same_seed_deals_the_same_board(self):
+        left = GameMachine.deal("classic6", 7)
+        right = GameMachine.deal("classic6", 7)
+        self.assertEqual([player.role for player in left.players], [player.role for player in right.players])
+        self.assertEqual(
+            [player.role for player in left.players].count(Role.WEREWOLF),
+            2,
+        )
+
+    def test_classic12_is_four_wolves_and_the_standard_gods(self):
+        game = GameMachine.deal("classic12", 1)
+        counts = {role: 0 for role in Role}
+        for player in game.players:
+            counts[player.role] += 1
+        self.assertEqual(len(game.players), 12)
+        self.assertEqual(counts[Role.WEREWOLF], 4)
+        self.assertEqual(counts[Role.SEER], 1)
+        self.assertEqual(counts[Role.WITCH], 1)
+        self.assertEqual(counts[Role.GUARD], 1)
+        self.assertEqual(counts[Role.HUNTER], 1)
+        self.assertEqual(counts[Role.VILLAGER], 4)
+        self.assertIsNone(game.update_winner())
+
+    def test_guard_blocks_knife_and_cannot_repeat(self):
+        game = board("werewolf", "werewolf", "villager", "witch", "guard", "villager")
+        game.begin_night()
+        self.assertTrue(game.apply_guard("p5", "p6").ok)
+        game.apply_wolf_votes({"p1": "p6", "p2": "p6"})
+        game.apply_witch(False, None)
+        deaths, notes = game.resolve_night()
+        self.assertEqual(deaths, [])
+        self.assertTrue(any("守卫守住了" in note for note in notes))
+
+        game.begin_night()
+        blocked = game.apply_guard("p5", "p6")
+        self.assertFalse(blocked.ok)
+        self.assertIsNone(game.night.guard_target)
+
+    def test_milk_through_kills_and_spends_antidote(self):
+        game = board("werewolf", "werewolf", "villager", "witch", "guard", "villager")
+        game.begin_night()
+        game.apply_guard("p5", "p6")
+        game.apply_wolf_votes({"p1": "p6", "p2": "p6"})
+        game.apply_witch(True, "p3")
+        self.assertFalse(game.player("p4").antidote)
+        self.assertTrue(game.player("p4").poison_left)
+        self.assertIsNone(game.night.witch_poison)
+        deaths, notes = game.resolve_night()
+        self.assertEqual([death.player_id for death in deaths], ["p6"])
+        self.assertEqual(deaths[0].cause, CAUSE_WOLF)
+        self.assertTrue(any("同守同救" in note for note in notes))
+
+    def test_poison_ignores_guard(self):
+        game = board("werewolf", "werewolf", "villager", "witch", "guard", "villager")
+        game.begin_night()
+        game.apply_guard("p5", "p3")
+        game.apply_wolf_votes({"p1": "p6", "p2": "p6"})
+        game.apply_witch(False, "p3")
+        deaths, _notes = game.resolve_night()
+        self.assertEqual({death.player_id for death in deaths}, {"p3", "p6"})
+        by_id = {death.player_id: death.cause for death in deaths}
+        self.assertEqual(by_id["p3"], CAUSE_POISON)
+        self.assertEqual(by_id["p6"], CAUSE_WOLF)
+
+    def test_poisoned_hunter_cannot_shoot_and_wolf_killed_hunter_can(self):
+        poisoned = board("werewolf", "witch", "hunter", "villager")
+        poisoned.begin_night()
+        poisoned.apply_wolf_votes({"p1": "p4"})
+        poisoned.apply_witch(False, "p3")
+        deaths, _notes = poisoned.resolve_night()
+        hunter_death = next(death for death in deaths if death.player_id == "p3")
+        self.assertEqual(hunter_death.cause, CAUSE_POISON)
+        self.assertFalse(poisoned.can_shoot("p3"))
+
+        shot = board("werewolf", "villager", "hunter")
+        shot.begin_night()
+        shot.apply_wolf_votes({"p1": "p3"})
+        deaths, _notes = shot.resolve_night()
+        self.assertTrue(shot.can_shoot("p3"))
+        killed = shot.apply_shot("p3", "p1")
+        self.assertIsNotNone(killed)
+        shot.update_winner()
+        self.assertEqual(shot.winner, "village")
+
+    def test_tied_vote_exiles_nobody_and_majority_ends_the_game(self):
+        game = board("werewolf", "villager", "villager")
+        game.begin_night()
+        game.resolve_night()
+        first = game.resolve_vote({"p1": "p2", "p2": "p1"})
+        self.assertIsNone(first.death)
+        self.assertIn("平票", first.public)
+        self.assertIsNone(game.update_winner())
+
+        second = game.resolve_vote({"p2": "p1", "p3": "p1", "p1": "p2"})
+        self.assertIsNotNone(second.death)
+        assert second.death is not None
+        self.assertEqual(second.death.player_id, "p1")
+        self.assertIn("身份是狼人", second.public)
+        self.assertEqual(game.update_winner(), "village")
+
+    def test_equal_numbers_are_a_wolf_win(self):
+        game = board("werewolf", "villager")
+        self.assertEqual(game.update_winner(), "werewolf")
+
+    def test_wolf_vote_tie_is_an_empty_knife(self):
+        game = board("werewolf", "werewolf", "villager", "villager")
+        game.begin_night()
+        result = game.apply_wolf_votes({"p1": "p3", "p2": "p4"})
+        self.assertIsNone(game.night.wolf_target)
+        self.assertIn("空刀", result.detail)
+
+    def test_public_task_rejects_private_markers(self):
+        with self.assertRaises(RuntimeError):
+            public_talk_task(1, "刀口: p1", ["p2"], "已出局: 无")
+
+    def test_wolf_task_names_only_the_wolf_channel(self):
+        text = wolf_task(1, ["p1", "p2", "p3"], ["p1", "p2"], "已出局: 无")
+        self.assertIn("【频道：狼人群】", text)
+        self.assertIn("本频道狼人: p1, p2", text)
+        self.assertNotIn("【频道：全体公聊】", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,29 @@
+# 这些规则没有唯一正确答案，必须写死在这一局里。
+# 改完直接生效。--preset / --seed 选牌和种子。
+# models.speech / models.decision 留空时，用 --model 或 OPENAI_MODEL。
+
+rules:
+  # 守卫和女巫同时作用在狼刀目标上：die 目标死亡，live 目标存活
+  guard_witch_same_target: die
+  # 女巫能不能救自己
+  witch_self_save: true
+  # 同一夜能不能既救又毒
+  witch_double_potion: false
+  # 被毒杀的猎人能不能开枪
+  hunter_poison_shoot: false
+  # 平票：no_exile 无人出局，pk 只在平票的人里再投一次，仍平则无人出局
+  vote_tie: no_exile
+  # slaughter_town 屠城：狼人数 >= 好人数则狼胜
+  # slaughter_side 屠边：神职或村民被杀光则狼胜
+  win_condition: slaughter_town
+  # 行动解析失败：pass 视为放弃，random 用本局种子抽一个合法目标
+  action_fallback: pass
+
+limits:
+  max_speech_chars: 200
+  history_chars: 4000
+
+models:
+  # 留空表示跟 --model / OPENAI_MODEL 相同
+  speech: ""
+  decision: ""
