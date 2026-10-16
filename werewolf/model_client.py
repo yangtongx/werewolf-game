@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, Mapping, Optional, Sequence, Union
@@ -25,6 +26,7 @@ from autogen_core.tools import Tool, ToolSchema
 from pydantic import BaseModel
 
 from werewolf.parse import canonicalize, parse_id_list
+from werewolf.vendors import Vendor
 from werewolf.prompts import (
     CHANNEL_GUARD,
     CHANNEL_HUNTER,
@@ -156,8 +158,7 @@ class ScriptedWerewolfClient(ChatCompletionClient):
         mates = parse_id_list(_last_value(system, "狼队友:") or "")
 
         if channel == CHANNEL_WOLF:
-            excluded = {seat, *mates}
-            target = _lowest(living, excluded)
+            target = _knife_target(seat, mates, living, messages)
             if target is None:
                 return "[ACTION] kill=none"
             return (
@@ -210,12 +211,98 @@ class ScriptedWerewolfClient(ChatCompletionClient):
                 return "[ACTION] vote=abstain"
             return f"我投票。\n[ACTION] vote={target}"
         if channel == CHANNEL_PUBLIC:
-            return f"我是{seat}，这轮先听发言，暂时不站边。"
+            return _public_line(seat, role, mates, living, history, task, messages)
         return "收到。"
 
 
 # 避免在回复函数里再导入枚举。
 RoleWerewolf = "werewolf"
+
+
+def _public_line(
+    seat: str,
+    role: str,
+    mates: list[str],
+    living: list[str],
+    history: str,
+    task: str,
+    messages: Sequence[LLMMessage],
+) -> str:
+    """演练房的白天发言。狼人看已经听到的话再决定跳、藏或质疑。"""
+    del task
+    target = _point_at(living, {seat, *mates}, seat)
+    if role == RoleWerewolf:
+        return _wolf_public_line(seat, mates, target, messages)
+    if role == "seer":
+        known = re.findall(r"查验结果:\s*(p\d+)\s*是(狼人|好人)", history)
+        if known:
+            player_id, side = known[-1]
+            return f"我是真预言家。{player_id}是{side}。谁再跳预言家，今天就对跳。"
+        return f"我是预言家，先不报验人。{target}的发言我听着像在抢身份。"
+    if role == "witch":
+        return f"药水我自己知道。{target}今天的话在带风向，我怀疑他是狼。"
+    if role == "guard":
+        return f"我守过，对象不说。{target}发言太顺，我这轮盯他。"
+    if role == "hunter":
+        return f"枪还在，身份先不亮。{target}要么是狼，要么在替狼开路。"
+    return f"我没有技能。{target}这轮要么是狼，要么在悍跳，我跟怀疑他的人。"
+
+
+def _wolf_public_line(seat: str, mates: list[str], target: str, messages: Sequence[LLMMessage]) -> str:
+    own = "\n".join(text for source, text in _spoken(messages) if source == seat)
+    if "我跳预言家" in own or "我还是预言家" in own:
+        return f"我还是预言家。{target}的票型不对，我今天继续押他。"
+    if "我跳守卫" in own or "守卫还在" in own:
+        return f"守卫还在。{target}昨天的发言对不上，我今天投他。"
+    if "我跳女巫" in own or "我还是女巫" in own:
+        return f"我还是女巫。{target}今天的话我听着假，我怀疑他。"
+    heard = [(source, text) for source, text in _spoken(messages) if source != seat]
+    seer_from_mate = any(source in mates and _claims_seer(text) for source, text in heard)
+    seer_from_outside = any(source not in mates and _claims_seer(text) for source, text in heard)
+    if seer_from_mate:
+        return f"已经有人跳预言家了。我先不亮身份，{target}的发言对不上，我怀疑他。"
+    if seer_from_outside:
+        return f"我跳预言家。昨晚验了{target}，是狼人。今天跟他对跳。"
+    pushed = any(seat in text and "怀疑" in text for _source, text in heard)
+    if pushed:
+        return f"我跳守卫。守护对象不公开。{target}在带节奏，我怀疑他。"
+    return f"我先不亮身份。{target}的发言对不上，我怀疑他。"
+
+
+def _knife_target(seat: str, mates: list[str], living: list[str], messages: Sequence[LLMMessage]) -> str | None:
+    """同伴被当众指成狼人才自刀。否则刀座位号最小的好人。狼队用同一条规则，刀口才会一致。"""
+    accused = [
+        mate
+        for mate in (*mates, seat)
+        if mate in living and any(re.search(rf"{mate}是狼人", text) for _source, text in _spoken(messages))
+    ]
+    if accused:
+        return min(set(accused), key=lambda player_id: int(player_id[1:]))
+    return _lowest(living, {seat, *mates})
+
+
+def _spoken(messages: Sequence[LLMMessage]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for message in messages:
+        if isinstance(message, SystemMessage):
+            continue
+        text = _text(message).strip()
+        if not text or text.startswith("【频道："):
+            continue
+        rows.append((getattr(message, "source", "") or "", text))
+    return rows
+
+
+def _claims_seer(text: str) -> bool:
+    return "跳预言家" in text or "我是真预言家" in text or "我是预言家" in text
+
+
+def _point_at(living: list[str], excluded: set[str], seat: str) -> str:
+    pool = [player_id for player_id in living if player_id not in excluded]
+    if not pool:
+        pool = list(living) or ["p1"]
+    shift = int(seat[1:]) if len(seat) > 1 and seat[1:].isdigit() else 0
+    return pool[shift % len(pool)]
 
 
 def build_model_client(*, mock: bool, model: str, api_key: str | None, base_url: str | None) -> ChatCompletionClient:
@@ -247,24 +334,20 @@ def build_model_client(*, mock: bool, model: str, api_key: str | None, base_url:
 
 
 class TracingClient(ChatCompletionClient):
-    """按环节把发言和决策分到两个模型，并记下每次调用。"""
+    """包住一个座位的厂家模型，并记下每次调用。"""
 
     def __init__(
         self,
-        speech: ChatCompletionClient,
-        decision: ChatCompletionClient,
+        inner: ChatCompletionClient,
         sink: list[dict[str, object]],
+        *,
+        vendor_id: str,
+        model_name: str,
     ) -> None:
-        self._speech = speech
-        self._decision = decision
+        self._inner = inner
         self._sink = sink
-
-    def _pick(self, messages: Sequence[LLMMessage]) -> tuple[str, ChatCompletionClient]:
-        task = _latest_task(messages)
-        stage = _last_value(task, "环节:") or ""
-        if stage == "发言":
-            return "speech", self._speech
-        return "decision", self._decision
+        self._vendor_id = vendor_id
+        self._model_name = model_name
 
     async def create(
         self,
@@ -276,9 +359,8 @@ class TracingClient(ChatCompletionClient):
         extra_create_args: Mapping[str, Any] = {},
         cancellation_token: Optional[CancellationToken] = None,
     ) -> CreateResult:
-        route, client = self._pick(messages)
         started = time.perf_counter()
-        result = await client.create(
+        result = await self._inner.create(
             messages,
             tools=tools,
             tool_choice=tool_choice,
@@ -286,7 +368,9 @@ class TracingClient(ChatCompletionClient):
             extra_create_args=extra_create_args,
             cancellation_token=cancellation_token,
         )
-        self._sink.append(_call_record(route, messages, result, started))
+        record = _call_record(self._vendor_id, messages, result, started)
+        record["model"] = self._model_name
+        self._sink.append(record)
         return result
 
     async def create_stream(
@@ -310,48 +394,91 @@ class TracingClient(ChatCompletionClient):
         yield result
 
     async def close(self) -> None:
-        await self._speech.close()
-        if self._decision is not self._speech:
-            await self._decision.close()
+        await self._inner.close()
 
     def actual_usage(self) -> RequestUsage:
-        return self._decision.actual_usage()
+        return self._inner.actual_usage()
 
     def total_usage(self) -> RequestUsage:
-        return self._decision.total_usage()
+        return self._inner.total_usage()
 
     def count_tokens(self, messages: Sequence[LLMMessage], *, tools: Sequence[Tool | ToolSchema] = []) -> int:
-        return self._decision.count_tokens(messages, tools=tools)
+        return self._inner.count_tokens(messages, tools=tools)
 
     def remaining_tokens(self, messages: Sequence[LLMMessage], *, tools: Sequence[Tool | ToolSchema] = []) -> int:
-        return self._decision.remaining_tokens(messages, tools=tools)
+        return self._inner.remaining_tokens(messages, tools=tools)
 
     @property
     def capabilities(self) -> ModelCapabilities:
-        return self._decision.capabilities
+        return self._inner.capabilities
 
     @property
     def model_info(self) -> ModelInfo:
-        return self._decision.model_info
+        return self._inner.model_info
 
 
-def build_traced_client(
+async def build_seat_clients(
+    assignment: dict[str, Vendor],
     *,
     mock: bool,
-    model: str,
-    speech_model: str,
-    decision_model: str,
-    api_key: str | None,
-    base_url: str | None,
     sink: list[dict[str, object]],
-) -> TracingClient:
-    speech_name = speech_model or model
-    speech = build_model_client(mock=mock, model=speech_name, api_key=api_key, base_url=base_url)
-    if mock or not decision_model or decision_model == speech_name:
-        decision = speech
-    else:
-        decision = build_model_client(mock=False, model=decision_model, api_key=api_key, base_url=base_url)
-    return TracingClient(speech, decision, sink)
+    keys: dict[str, str] | None = None,
+) -> tuple[dict[str, TracingClient], list[ChatCompletionClient]]:
+    """每个座位一个厂家。mock 时共用一个脚本客户端，只记下分配到的厂家。
+
+    keys 不为空时只认这份内存里的密钥，不读环境变量。
+    """
+    missing = [
+        f"{player_id} 的{vendor.label}"
+        for player_id, vendor in assignment.items()
+        if not mock and not _seat_key(player_id, vendor, keys)
+    ]
+    if missing:
+        names = "、".join(dict.fromkeys(missing))
+        raise RuntimeError(f"本局用到的厂家还没有密钥：{names}")
+    owned: list[ChatCompletionClient] = []
+    shared = ScriptedWerewolfClient() if mock else None
+    if shared is not None:
+        owned.append(shared)
+    clients: dict[str, TracingClient] = {}
+    try:
+        for player_id, vendor in assignment.items():
+            if shared is not None:
+                inner: ChatCompletionClient = shared
+            else:
+                inner = build_model_client(
+                    mock=False,
+                    model=vendor.model,
+                    api_key=_seat_key(player_id, vendor, keys),
+                    base_url=vendor.base_url or None,
+                )
+                owned.append(inner)
+            clients[player_id] = TracingClient(
+                inner,
+                sink,
+                vendor_id=vendor.id,
+                model_name=vendor.model,
+            )
+    except Exception:
+        await close_clients(owned)
+        raise
+    return clients, owned
+
+
+def _seat_key(player_id: str, vendor: Vendor, keys: dict[str, str] | None) -> str:
+    """keys 按座位给。没有这份字典时，才回退去读该厂家的环境变量。"""
+    if keys is not None:
+        return (keys.get(player_id) or "").strip()
+    return (os.environ.get(vendor.api_key_env) or "").strip()
+
+
+async def close_clients(clients: list[ChatCompletionClient]) -> None:
+    seen: set[int] = set()
+    for client in clients:
+        if id(client) in seen:
+            continue
+        seen.add(id(client))
+        await client.close()
 
 
 def _call_record(

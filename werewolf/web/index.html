@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>狼人杀</title>
+  <style>
+    :root { color-scheme: dark; --ink: #f4efe4; --muted: #b7ab96; --felt: #1d4a34; --night: #09111c; --gold: #e6c27a; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--ink);
+      font-family: "Palatino Linotype", "Songti SC", Palatino, serif;
+      background: radial-gradient(circle at 50% 20%, #24344a 0, transparent 42%), linear-gradient(#121820, var(--night));
+    }
+    body.night { background: radial-gradient(circle at 50% 18%, #1c3148 0, transparent 36%), #070d16; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 28px 0; }
+    h1 { margin: 0; font-weight: 600; letter-spacing: 0.18em; font-size: 28px; }
+    #phase { margin: 0; color: var(--gold); letter-spacing: 0.08em; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; padding: 12px 24px 24px; align-items: start; }
+    #board { position: relative; width: min(720px, 100%); aspect-ratio: 1; margin: 0 auto; }
+    #table {
+      position: absolute; inset: 16%; border-radius: 50%;
+      background: radial-gradient(circle at 50% 42%, rgba(255,255,255,.08), transparent 36%), radial-gradient(circle at 50% 50%, #246645, var(--felt) 70%);
+      border: 16px solid #8a5a34; box-shadow: inset 0 0 40px rgba(0,0,0,.35), 0 18px 40px rgba(0,0,0,.35);
+    }
+    body.night #table { background: radial-gradient(circle at 50% 40%, #16324a, #102033 72%); border-color: #3d4d63; }
+    #center { position: absolute; inset: 18%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 1; }
+    #center-title { margin: 0; font-size: 28px; }
+    #center-detail { margin: 8px 0 0; max-width: 26em; color: var(--muted); font-size: 15px; line-height: 1.5; white-space: pre-wrap; }
+    #start { margin-top: 16px; min-width: 8em; font-size: 18px; letter-spacing: 0.2em; }
+    .seat { position: absolute; width: 108px; transform: translate(-50%, -50%); text-align: center; z-index: 2; background: none; border: 0; color: inherit; font: inherit; padding: 0; }
+    button.seat { cursor: pointer; }
+    .avatar { width: 72px; height: 72px; margin: 0 auto; border-radius: 50%; overflow: hidden; border: 3px solid rgba(255,255,255,.75); background: #111; }
+    .seat.empty .avatar { border-style: dashed; background: transparent; }
+    .seat.acting .avatar { animation: pulse 1.2s ease-in-out infinite; }
+    .seat.dead { filter: grayscale(1); opacity: .62; }
+    .name { margin-top: 6px; font-size: 14px; }
+    .meta, .role { font-family: "Segoe UI", sans-serif; font-size: 12px; color: var(--muted); }
+    .role.werewolf { color: #ffb4a8; } .role.seer { color: #9ec5ff; } .role.witch { color: #e0b3ff; }
+    .role.guard { color: #b7e4c7; } .role.hunter { color: #ffd29a; }
+    aside { min-height: 420px; height: min(720px, calc(100vh - 110px)); display: flex; flex-direction: column; background: rgba(12,16,24,.72); border: 1px solid rgba(230,194,122,.25); border-radius: 16px; overflow: hidden; }
+    .tabs { display: flex; } .tabs button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 12px; font: inherit; cursor: pointer; }
+    .tabs button.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--gold); }
+    #log { overflow: auto; padding: 12px 14px 18px; }
+    .line { margin: 0 0 12px; } .line strong { display: block; font-size: 13px; color: var(--gold); }
+    .line p { margin: 4px 0 0; font-family: "Segoe UI", sans-serif; font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dialog { width: min(520px, calc(100vw - 32px)); border: 1px solid rgba(230,194,122,.4); border-radius: 18px; background: #161b22; color: var(--ink); padding: 22px; }
+    dialog::backdrop { background: rgba(0,0,0,.55); }
+    #home { width: min(560px, calc(100vw - 32px)); }
+    .hint, .model { margin: 0 0 14px; color: var(--muted); font-family: "Segoe UI", sans-serif; font-size: 13px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; font-family: "Segoe UI", sans-serif; }
+    label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); flex: 1; }
+    input, select, button.primary { font: inherit; color: var(--ink); background: #0e131a; border: 1px solid #3a4452; border-radius: 8px; padding: 8px 10px; }
+    button.primary { background: #8a3b2b; border-color: #8a3b2b; cursor: pointer; }
+    button.link { background: none; border: 0; color: var(--gold); cursor: pointer; font: inherit; }
+    #link { width: 100%; margin-bottom: 8px; }
+    #error { color: #ffb4a8; font-family: "Segoe UI", sans-serif; min-height: 1.2em; }
+    #room { display: none; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 4px var(--gold); } }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { height: 280px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>狼人杀</h1>
+    <p id="phase">等别人入座</p>
+  </header>
+  <dialog id="home">
+    <h2>开一桌</h2>
+    <p class="hint">把链接发给别人。每人自己选厂家，填自己的密钥。坐满以后，由开桌的人开斗。密钥不进浏览器存储，也不落盘，别人看不见。</p>
+    <form id="create" autocomplete="off">
+      <div class="row">
+        <label class="field">人数
+          <select id="preset" name="preset">
+            <option value="classic6">6 人</option>
+            <option value="classic9">9 人</option>
+            <option value="classic12">12 人</option>
+          </select>
+        </label>
+        <label class="field">种子
+          <input id="seed" type="number" value="7">
+        </label>
+        <label class="field">演练房
+          <input id="mock" type="checkbox">
+        </label>
+      </div>
+      <p id="create-error" class="hint"></p>
+      <button class="primary" type="submit">创建并拿到链接</button>
+    </form>
+  </dialog>
+  <main id="room">
+    <div>
+      <label class="field">把这个地址发给要入座的人
+        <input id="link" readonly>
+      </label>
+      <div id="board">
+        <div id="table"></div>
+        <div id="center">
+          <h2 id="center-title">等人</h2>
+          <p id="center-detail"></p>
+          <button id="start" class="primary" type="button" hidden>开斗</button>
+        </div>
+        <div id="seats"></div>
+      </div>
+    </div>
+    <aside>
+      <div class="tabs">
+        <button type="button" class="on" data-tab="public">白天公聊</button>
+        <button type="button" data-tab="judge">裁判记录</button>
+      </div>
+      <div id="log"></div>
+    </aside>
+  </main>
+  <dialog id="sit">
+    <h2 id="sit-title">入座</h2>
+    <p class="hint">选你的厂家。模型用这一家当前的旗舰。密钥只交给这桌，输入后不显示明文。</p>
+    <form id="sit-form" autocomplete="off">
+      <label class="field">厂家
+        <select id="vendor"></select>
+      </label>
+      <p id="vendor-model" class="model"></p>
+      <label class="field">你的 API key
+        <input id="apikey" autocomplete="off" spellcheck="false" placeholder="API key">
+      </label>
+      <p id="sit-error" class="hint"></p>
+      <button class="primary" type="submit">坐下</button>
+    </form>
+  </dialog>
+  <script>
+    const brands = {
+      openai: ["#10a37f", "AI"], deepseek: ["#4d6bfe", "DS"], qwen: ["#615ced", "千"],
+      zhipu: ["#2f54eb", "智"], moonshot: ["#1c1c1c", "月"], gemini: ["#1a73e8", "G"],
+      minimax: ["#e11d48", "M"], doubao: ["#3370ff", "豆"], baichuan: ["#0284c7", "川"],
+      stepfun: ["#222", "阶"], hunyuan: ["#0052d9", "混"], spark: ["#1677ff", "火"]
+    };
+    const players = new Map();
+    let tab = "public";
+    let vendors = [];
+    let hostToken = "";
+    let roomId = "";
+    let sitting = "";
+    let started = false;
+
+    function avatar(id, empty) {
+      if (empty) return '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="none" stroke="#e6c27a" stroke-width="3" stroke-dasharray="6 5"></circle><text x="32" y="38" text-anchor="middle" font-size="16" fill="#e6c27a">入座</text></svg>';
+      const pair = brands[id] || ["#444", "?"];
+      return '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="' + pair[0] + '"></circle><text x="32" y="39" text-anchor="middle" font-size="20" fill="#fff" font-family="Palatino Linotype, serif">' + pair[1] + "</text></svg>";
+    }
+
+    function renderLobby(state) {
+      started = state.started;
+      const box = document.getElementById("seats");
+      box.innerHTML = "";
+      state.seats.forEach((seat, index) => {
+        const angle = (Math.PI * 2 * index) / state.seats.length - Math.PI / 2;
+        const node = document.createElement(seat.taken || started ? "div" : "button");
+        node.className = "seat" + (seat.taken ? "" : " empty");
+        node.style.left = (50 + 42 * Math.cos(angle)) + "%";
+        node.style.top = (50 + 42 * Math.sin(angle)) + "%";
+        node.innerHTML = '<div class="avatar">' + avatar(seat.vendor_id, !seat.taken) + '</div><div class="name">' + seat.id + '</div><div class="meta"></div>';
+        node.querySelector(".meta").textContent = seat.taken ? seat.vendor_label : "空位";
+        if (!seat.taken && !started) node.addEventListener("click", () => openSit(seat.id));
+        box.appendChild(node);
+      });
+      const remain = state.size - state.filled;
+      const ready = state.filled === state.size && !state.started;
+      document.getElementById("center-title").textContent = state.started ? "开斗" : (remain ? "还差 " + remain + " 人" : "人齐了");
+      document.getElementById("center-detail").textContent = state.started
+        ? "身份已经发出，模型只知道自己的牌。"
+        : (ready ? (hostToken ? "点下面开斗。" : "等开桌的人开斗。") : "点空位入座。每人带自己的模型。");
+      document.getElementById("start").hidden = !(hostToken && ready);
+    }
+
+    function renderSeats() {
+      const box = document.getElementById("seats");
+      const list = [...players.values()];
+      box.innerHTML = "";
+      list.forEach((player, index) => {
+        const angle = (Math.PI * 2 * index) / list.length - Math.PI / 2;
+        const seat = document.createElement("div");
+        seat.className = "seat" + (player.alive ? "" : " dead") + (player.acting ? " acting" : "");
+        seat.style.left = (50 + 42 * Math.cos(angle)) + "%";
+        seat.style.top = (50 + 42 * Math.sin(angle)) + "%";
+        seat.innerHTML = '<div class="avatar">' + avatar(player.vendor_id, false) + '</div><div class="name"></div><div class="meta"></div><div class="role"></div>';
+        seat.querySelector(".name").textContent = player.label;
+        seat.querySelector(".meta").textContent = player.vendor_label;
+        const role = seat.querySelector(".role");
+        role.className = "role " + player.role;
+        role.textContent = player.alive ? player.role_label : "出局 · " + player.role_label;
+        box.appendChild(seat);
+      });
+    }
+
+    function addLine(kind, title, text) {
+      const log = document.getElementById("log");
+      const item = document.createElement("article");
+      item.className = "line";
+      item.dataset.kind = kind;
+      item.hidden = tab === "public" ? kind === "judge" : kind === "public";
+      item.innerHTML = "<strong></strong><p></p>";
+      item.querySelector("strong").textContent = title;
+      item.querySelector("p").textContent = text;
+      log.appendChild(item);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setPhase(title, detail, night) {
+      document.body.classList.toggle("night", night);
+      document.getElementById("phase").textContent = title;
+      document.getElementById("center-title").textContent = title;
+      document.getElementById("center-detail").textContent = detail || "";
+    }
+
+    function onEvent(event) {
+      const payload = event.payload || {};
+      if (event.kind === "lobby") { renderLobby(payload); return; }
+      if (event.kind === "table") {
+        players.clear();
+        payload.players.forEach((player) => players.set(player.id, player));
+        renderSeats();
+        document.getElementById("start").hidden = true;
+        return;
+      }
+      if (event.kind === "phase") {
+        players.forEach((player) => { player.acting = false; });
+        renderSeats();
+        setPhase(payload.title, payload.detail, payload.phase === "night");
+        if (payload.detail) addLine("public", payload.title, payload.detail);
+        return;
+      }
+      if (event.kind === "channel") {
+        const active = new Set(payload.participants || []);
+        players.forEach((player) => { player.acting = active.has(player.id); });
+        renderSeats();
+        addLine("judge", "频道", payload.banner);
+        return;
+      }
+      if (event.kind === "speak") {
+        const player = players.get(payload.source);
+        const who = player ? player.label + " · " + player.vendor_label : payload.source;
+        addLine(payload.private ? "judge" : "public", who, payload.content);
+        if (!payload.private) document.getElementById("center-detail").textContent = payload.content;
+        return;
+      }
+      if (event.kind === "audit") {
+        const text = payload.summary || ((payload.source || "发言") + " 命中 " + (payload.hits || []).join("、"));
+        if (text) addLine("judge", "泄漏检查", text);
+        return;
+      }
+      if (event.kind === "announce") { addLine("public", "宣判", payload.text); setPhase("宣判", payload.text, false); return; }
+      if (event.kind === "death") {
+        const player = players.get(payload.player_id);
+        if (player) player.alive = false;
+        renderSeats();
+        addLine("public", "出局", payload.label + "，身份是" + payload.role_label);
+        return;
+      }
+      if (event.kind === "winner") {
+        const names = { village: "好人获胜", werewolf: "狼人获胜", draw: "平局" };
+        setPhase(names[payload.winner] || "结束", payload.summary, false);
+        addLine("public", "结束", payload.summary);
+        return;
+      }
+      if (event.kind === "error") document.getElementById("phase").textContent = payload.message || "这桌中断了";
+    }
+
+    function openSit(seatId) {
+      sitting = seatId;
+      document.getElementById("sit-title").textContent = seatId + " 入座";
+      document.getElementById("sit-error").textContent = "";
+      document.getElementById("apikey").value = "";
+      document.getElementById("sit").showModal();
+    }
+
+    function showVendor() {
+      const vendor = vendors.find((item) => item.id === document.getElementById("vendor").value);
+      document.getElementById("vendor-model").textContent = vendor ? vendor.model : "";
+    }
+
+    async function loadVendors() {
+      vendors = await (await fetch("/api/vendors")).json();
+      const select = document.getElementById("vendor");
+      vendors.forEach((vendor) => {
+        const option = document.createElement("option");
+        option.value = vendor.id;
+        option.textContent = vendor.label;
+        select.appendChild(option);
+      });
+      showVendor();
+    }
+
+    function enterRoom(id) {
+      roomId = id;
+      document.getElementById("home").close();
+      document.getElementById("room").style.display = "grid";
+      document.getElementById("link").value = location.origin + "/r/" + id;
+      history.pushState({}, "", "/r/" + id);
+      const source = new EventSource("/api/rooms/" + id + "/events");
+      source.onmessage = (message) => {
+        const item = JSON.parse(message.data);
+        onEvent(item);
+        if (item.kind === "done") source.close();
+      };
+    }
+
+    document.getElementById("vendor").addEventListener("change", showVendor);
+    document.querySelectorAll(".tabs button").forEach((button) => {
+      button.addEventListener("click", () => {
+        tab = button.dataset.tab;
+        document.querySelectorAll(".tabs button").forEach((item) => item.classList.toggle("on", item === button));
+        document.querySelectorAll("#log .line").forEach((line) => {
+          line.hidden = tab === "public" ? line.dataset.kind === "judge" : line.dataset.kind === "public";
+        });
+      });
+    });
+    document.getElementById("create").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          preset: document.getElementById("preset").value,
+          seed: Number(document.getElementById("seed").value || 7),
+          mock: document.getElementById("mock").checked,
+          talk_rounds: 1,
+          wolf_rounds: 1
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) { document.getElementById("create-error").textContent = data.error || "没有创建"; return; }
+      hostToken = data.hostToken;
+      enterRoom(data.id);
+    });
+    document.getElementById("sit-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = document.getElementById("apikey");
+      const apiKey = input.value;
+      input.value = "";
+      const response = await fetch("/api/rooms/" + roomId + "/seats/" + sitting, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendorId: document.getElementById("vendor").value, apiKey: apiKey })
+      });
+      const data = await response.json();
+      if (!response.ok) { document.getElementById("sit-error").textContent = data.error || "没坐下"; return; }
+      document.getElementById("sit").close();
+    });
+    document.getElementById("start").addEventListener("click", async () => {
+      const token = hostToken;
+      const response = await fetch("/api/rooms/" + roomId + "/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostToken: token })
+      });
+      const data = await response.json();
+      if (!response.ok) document.getElementById("phase").textContent = data.error || "没能开斗";
+    });
+    const input = document.getElementById("apikey");
+    input.type = "password";
+    input.autocomplete = "new-password";
+    loadVendors();
+    const opened = location.pathname.match(/^\/r\/([0-9a-f]+)$/);
+    if (opened) enterRoom(opened[1]);
+    else document.getElementById("home").showModal();
+  </script>
+</body>
+</html>

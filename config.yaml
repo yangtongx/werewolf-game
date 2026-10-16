@@ -1,6 +1,5 @@
 # 这些规则没有唯一正确答案，必须写死在这一局里。
-# 改完直接生效。--preset / --seed 选牌和种子。
-# models.speech / models.decision 留空时，用 --model 或 OPENAI_MODEL。
+# 改完直接生效。--preset / --seed 同时决定身份和厂家模型。
 
 rules:
   # 守卫和女巫同时作用在狼刀目标上：die 目标死亡，live 目标存活
@@ -23,7 +22,66 @@ limits:
   max_speech_chars: 200
   history_chars: 4000
 
-models:
-  # 留空表示跟 --model / OPENAI_MODEL 相同
-  speech: ""
-  decision: ""
+# 顺序就是取用顺序。6 人用前 6 家，9 人用前 9 家，12 人用全部。
+# 开局按 --seed 洗牌，分到座位上。密钥写在环境变量里，不要写进这个文件。
+vendors:
+  - id: openai
+    label: OpenAI
+    model: gpt-6-astra
+    base_url:
+    api_key_env: OPENAI_API_KEY
+  - id: deepseek
+    label: DeepSeek
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+  - id: qwen
+    label: 通义千问
+    model: qwen3.8-max
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+  - id: zhipu
+    label: 智谱
+    model: glm-5.3
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+  - id: moonshot
+    label: 月之暗面
+    model: kimi-k3
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+  - id: gemini
+    label: Gemini
+    model: gemini-3.8-flash
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+  - id: minimax
+    label: MiniMax
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
+    api_key_env: MINIMAX_API_KEY
+  - id: doubao
+    label: 豆包
+    model: doubao-seed-2.0-pro
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+  - id: baichuan
+    label: 百川
+    model: Baichuan4
+    base_url: https://api.baichuan-ai.com/v1
+    api_key_env: BAICHUAN_API_KEY
+  - id: stepfun
+    label: 阶跃星辰
+    model: step-3.7-flash
+    base_url: https://api.stepfun.com/v1
+    api_key_env: STEPFUN_API_KEY
+  - id: hunyuan
+    label: 腾讯混元
+    model: hy3
+    base_url: https://api.hunyuan.cloud.tencent.com/v1
+    api_key_env: HUNYUAN_API_KEY
+  - id: spark
+    label: 讯飞星火
+    model: spark-x2.5
+    base_url: https://spark-api-open.xf-yun.com/v1
+    api_key_env: SPARK_API_KEY

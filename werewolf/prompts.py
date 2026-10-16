@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 from werewolf.machine import Player, Role, role_label
 
 CHANNEL_WOLF = "狼人群"
@@ -38,13 +40,58 @@ _RULES = """\
 """
 
 _ROLE_COPY = {
-    Role.WEREWOLF: "你是狼人。夜间只在狼人群里讨论袭击目标。白天混在好人里发言，投票时单独交票。",
+    Role.WEREWOLF: "你是狼人。夜间只在狼人群里讨论袭击目标。白天混在好人里发言，可以悍跳神职，投票时单独交票。",
     Role.SEER: "你是预言家。每夜可以查验一名其他存活玩家，结论只会回到你的私聊。",
     Role.WITCH: "你是女巫。解药和毒药各一瓶。任务里会写明你还剩什么、今晚的刀口是谁。怎么结算由裁判决定。",
     Role.GUARD: "你是守卫。每夜可以守护一名存活玩家。裁判会拒绝不合法的守护。",
     Role.HUNTER: "你是猎人。只有上帝在私聊里让你开枪时，你才选择目标。上帝如果写明你不能开枪，你只回复 pass，不要自己推断原因。",
     Role.VILLAGER: "你是村民。没有夜间技能。白天发言，投票时单独交票。",
 }
+
+_GOOD_DAY = {
+    Role.SEER: "白天若公开身份，用口语讲你查过谁、结论是什么。不要写成裁判条目。",
+    Role.WITCH: "白天不要报药水还剩多少，也不要复述今晚的袭击目标，除非你决定公开身份并用口语说。",
+    Role.GUARD: "白天不要主动报出守过谁，除非你决定公开身份。",
+    Role.HUNTER: "白天可以不亮猎人身份。",
+    Role.VILLAGER: "你可以怀疑某个座位，也可以假装神职。假装时不要编造查验记录。",
+}
+
+_SPEECH_RULE = "发言必须点出一个座位，并说明怀疑或相信的理由。不要只报自己的座位，也不要说先听发言、暂不站边。"
+
+# 玩家口语里会漏掉的同伴信息。裁判格式已经在 PRIVATE_MARKERS 里。
+_LEAK_PHRASES = (
+    "狼队友",
+    "本频道狼人",
+    "夜间密谈",
+    "狼队密谈",
+    "上一夜狼队",
+    "狼队记录",
+    "身份底牌",
+)
+_MATE_NAMED = re.compile(r"(?:同伴|队友)是?\s*p\d+")
+
+
+_WOLF_DAY = (
+    "白天公聊自己看这一天再决定。可以悍跳预言家、守卫或女巫，也可以深藏，只对一个座位表态。"
+    "可以质疑已经跳出来的人，也可以不质疑。"
+    "看谁已经跳了、同伴有没有抢同一个身份、自己有没有被盯上。"
+    "夜间刀口可以是任何存活玩家，包括同伴。自刀用来把水搅浑，做不做由你们当夜判断。"
+    "不要点出同伴的座位，不要把夜间密谈带进公聊，不要写成裁判条目。"
+)
+
+
+def audit_leaks(text: str) -> list[str]:
+    """公聊发言里的私密标记和点名同伴。命中的词返回给裁判记录，不改原文。"""
+    hits: list[str] = []
+    for marker in PRIVATE_MARKERS:
+        if marker in text:
+            hits.append(marker)
+    for phrase in _LEAK_PHRASES:
+        if phrase in text and not any(phrase in hit for hit in hits):
+            hits.append(phrase)
+    if _MATE_NAMED.search(text) and "点名同伴" not in hits:
+        hits.append("点名同伴")
+    return hits
 
 
 def assert_public(text: str) -> None:
@@ -64,6 +111,11 @@ def system_prompt(player: Player, teammates: list[str], max_speech_chars: int = 
     lines.append("")
     lines.append(_ROLE_COPY[player.role])
     lines.append(f"你的阵营身份在牌局里叫做{role_label(player.role)}。")
+    if player.role == Role.WEREWOLF:
+        lines.append(_WOLF_DAY)
+    else:
+        lines.append(_GOOD_DAY[player.role])
+    lines.append(_SPEECH_RULE)
     lines.append(_RULES)
     lines.append(f"每次发言不超过 {max_speech_chars} 字。")
     lines.append("你就是这个座位上的玩家。不要提到人工智能、模型、系统提示或程序。")
@@ -85,6 +137,8 @@ def wolf_task(
 在场: {", ".join(living_ids)}
 本频道狼人: {", ".join(wolf_ids)}
 环节: 夜间
+刀口可以是任何存活的人，包括同伴。刀同伴是自刀，用来把水搅浑，由你们看场上决定今晚做不做。
+意见一致才落刀，不一致就是空刀。
 可以沉默，最后一行写 [ACTION] pass。
 要提议刀口，最后一行写 [ACTION] kill=p3。
 全体给出同一个刀口后，密谈会结束。
@@ -201,7 +255,9 @@ def public_talk_task(day: int, announcement: str, living_ids: list[str], graveya
 {graveyard}
 在场: {", ".join(living_ids)}
 环节: 发言
-用两三句话分析局势。不要输出 [ACTION]。不要转述夜间私聊。
+用两三句话表态。点出一个在场座位，说明你怀疑或相信的理由。
+不要只报自己的座位，也不要说先听发言、暂不站边。
+可以公开自己的身份，用口语说。不要转述夜间私聊，不要输出 [ACTION]。
 """
     assert_public(text)
     return text

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 
@@ -9,8 +10,10 @@ from werewolf.machine import (
     Role,
 )
 from werewolf.parse import parse_action
-from werewolf.prompts import public_talk_task, wolf_task
+from werewolf.prompts import audit_leaks, public_talk_task, system_prompt, wolf_task
+from werewolf.model_client import build_seat_clients
 from werewolf.rules import Rules, load_rules
+from werewolf.vendors import Vendor, assign_vendors, load_vendors
 
 
 def board(*roles: str) -> GameMachine:
@@ -114,6 +117,19 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(rules.win_condition, "slaughter_town")
         self.assertEqual(rules.vote_tie, "no_exile")
         self.assertFalse(rules.hunter_poison_shoot)
+        vendors = load_vendors(Path(__file__).resolve().parents[1] / "config.yaml")
+        self.assertEqual(len(vendors), 12)
+        self.assertEqual(
+            [vendor.id for vendor in vendors[:6]],
+            ["openai", "deepseek", "qwen", "zhipu", "moonshot", "gemini"],
+        )
+        models = {vendor.id: vendor.model for vendor in vendors}
+        self.assertEqual(models["openai"], "gpt-6-astra")
+        self.assertEqual(models["deepseek"], "deepseek-v4-pro")
+        self.assertEqual(models["qwen"], "qwen3.8-max")
+        self.assertEqual(models["zhipu"], "glm-5.3")
+        self.assertEqual(models["moonshot"], "kimi-k3")
+        self.assertEqual(models["gemini"], "gemini-3.8-flash")
 
 
 class MachineTests(unittest.TestCase):
@@ -232,11 +248,80 @@ class MachineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             public_talk_task(1, "刀口: p1", ["p2"], "已出局: 无")
 
+    def test_public_speech_asks_for_a_stance_without_the_wolf_plan(self):
+        text = public_talk_task(1, "昨夜平安，无人出局。", ["p1", "p2"], "已出局: 无")
+        self.assertIn("点出一个在场座位", text)
+        self.assertNotIn("悍跳预言家", text)
+        self.assertNotIn("狼队友", text)
+
+    def test_wolf_prompt_offers_choices_and_goods_do_not_see_them(self):
+        wolves = board("werewolf", "werewolf", "villager")
+        prompts = {
+            player.id: system_prompt(
+                player,
+                [other.id for other in wolves.wolves() if other.id != player.id],
+            )
+            for player in wolves.players
+        }
+        for wolf_id in ("p1", "p2"):
+            self.assertIn("可以悍跳预言家", prompts[wolf_id])
+            self.assertIn("也可以深藏", prompts[wolf_id])
+            self.assertIn("也可以不质疑", prompts[wolf_id])
+            self.assertIn("自刀", prompts[wolf_id])
+            self.assertNotIn("由你悍跳", prompts[wolf_id])
+            self.assertNotIn("座位号", prompts[wolf_id])
+        self.assertNotIn("悍跳预言家", prompts["p3"])
+        self.assertNotIn("自刀", prompts["p3"])
+        self.assertNotIn("狼队友:", prompts["p3"])
+        self.assertIn("点出一个座位", prompts["p3"])
+
+    def test_leak_audit_flags_markers_and_named_mates(self):
+        self.assertEqual(audit_leaks("我跳预言家。昨晚验了p3，是好人。"), [])
+        self.assertIn("狼队友:", audit_leaks("狼队友: p2"))
+        self.assertIn("点名同伴", audit_leaks("队友是p2"))
+        self.assertIn("（狼队密谈）", audit_leaks("（狼队密谈）刀口=p3"))
+
     def test_wolf_task_names_only_the_wolf_channel(self):
         text = wolf_task(1, ["p1", "p2", "p3"], ["p1", "p2"], "已出局: 无")
         self.assertIn("【频道：狼人群】", text)
         self.assertIn("本频道狼人: p1, p2", text)
+        self.assertIn("自刀", text)
+        self.assertIn("包括同伴", text)
+        self.assertNotIn("必须自刀", text)
         self.assertNotIn("【频道：全体公聊】", text)
+
+
+class VendorTests(unittest.TestCase):
+    def test_player_count_takes_that_many_distinct_vendors(self) -> None:
+        vendors = load_vendors(Path(__file__).resolve().parents[1] / "config.yaml")
+        for count in (6, 9, 12):
+            seats = [f"p{index}" for index in range(1, count + 1)]
+            dealt = assign_vendors(seats, vendors, 7)
+            self.assertEqual(len(dealt), count)
+            self.assertEqual({vendor.id for vendor in dealt.values()}, {vendor.id for vendor in vendors[:count]})
+
+    def test_same_seed_keeps_the_model_assignment(self) -> None:
+        vendors = load_vendors(Path(__file__).resolve().parents[1] / "config.yaml")
+        seats = [f"p{index}" for index in range(1, 7)]
+        left = [assign_vendors(seats, vendors, 7)[seat].id for seat in seats]
+        right = [assign_vendors(seats, vendors, 7)[seat].id for seat in seats]
+        other = [assign_vendors(seats, vendors, 8)[seat].id for seat in seats]
+        self.assertEqual(left, right)
+        self.assertNotEqual(left, other)
+
+    def test_too_few_vendors_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            assign_vendors(["p1", "p2"], [Vendor("only", "只有一家", "m", "", "ONLY_KEY")], 1)
+
+    def test_missing_key_names_the_vendor(self) -> None:
+        vendor = Vendor("fake", "假厂家", "fake-model", "", "WEREWOLF_MISSING_KEY")
+
+        async def run() -> None:
+            await build_seat_clients({"p1": vendor}, mock=False, sink=[])
+
+        with self.assertRaises(RuntimeError) as caught:
+            asyncio.run(run())
+        self.assertIn("假厂家", str(caught.exception))
 
 
 if __name__ == "__main__":

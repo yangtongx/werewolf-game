@@ -72,24 +72,59 @@ def _as_bool(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
-def _load_simple_yaml(text: str) -> dict[str, dict[str, object]]:
-    """只解析本项目这种两层映射，不引入 YAML 库。"""
-    root: dict[str, dict[str, object]] = {}
-    section: dict[str, object] | None = None
+def _load_simple_yaml(text: str) -> dict[str, dict[str, object] | list[dict[str, object]]]:
+    """解析两层映射，以及 vendors 这种列表。不引入 YAML 库。"""
+    root: dict[str, dict[str, object] | list[dict[str, object]]] = {}
+    section_key: str | None = None
+    current_item: dict[str, object] | None = None
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
-        if line[0] not in {" ", "\t"}:
-            key = line.split(":", 1)[0].strip()
-            section = {}
-            root[key] = section
+        indent = len(line) - len(line.lstrip(" "))
+        content = line.strip()
+        if indent == 0:
+            if not content.endswith(":") or content.startswith("-"):
+                raise ValueError(f"无法解析配置行: {raw}")
+            section_key = content[:-1].strip()
+            root[section_key] = {}
+            current_item = None
             continue
-        if section is None or ":" not in line:
+        if section_key is None:
             raise ValueError(f"无法解析配置行: {raw}")
-        key, value = line.strip().split(":", 1)
-        section[key.strip()] = _scalar(value.strip())
+        if content.startswith("- "):
+            section = root[section_key]
+            if not isinstance(section, list):
+                if section:
+                    raise ValueError(f"{section_key} 不能同时是映射和列表")
+                section = []
+                root[section_key] = section
+            current_item = {}
+            section.append(current_item)
+            body = content[2:].strip()
+            if body:
+                key, value = _split_pair(body, raw)
+                current_item[key] = _scalar(value) if value else ""
+            continue
+        if ":" not in content:
+            raise ValueError(f"无法解析配置行: {raw}")
+        key, value = _split_pair(content, raw)
+        if current_item is not None and indent >= 4:
+            current_item[key] = _scalar(value) if value else ""
+            continue
+        section = root[section_key]
+        if not isinstance(section, dict):
+            raise ValueError(f"无法解析配置行: {raw}")
+        section[key] = _scalar(value) if value else ""
+        current_item = None
     return root
+
+
+def _split_pair(content: str, raw: str) -> tuple[str, str]:
+    if ":" not in content:
+        raise ValueError(f"无法解析配置行: {raw}")
+    key, value = content.split(":", 1)
+    return key.strip(), value.strip()
 
 
 def _scalar(value: str) -> object:

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
@@ -20,10 +20,11 @@ from autogen_core.models import ChatCompletionClient, UserMessage
 from werewolf.actions import ActionRecord, resolve_target
 from werewolf.channels import open_public_talk, open_wolf_meeting
 from werewolf.machine import Death, GameMachine, Role, role_label, seat_key
-from werewolf.model_client import build_traced_client
+from werewolf.model_client import build_seat_clients, close_clients
 from werewolf.parse import parse_action
 from werewolf.prompts import (
     assert_public,
+    audit_leaks,
     guard_task,
     hunter_blocked_task,
     hunter_task,
@@ -39,6 +40,7 @@ from werewolf.prompts import (
 )
 from werewolf.rules import Rules
 from werewolf.seat import SeatAgent
+from werewolf.vendors import Vendor, assign_vendors, default_vendors
 
 Printer = Callable[[str], None]
 
@@ -64,6 +66,8 @@ class GameResult:
     transitions: list[dict[str, object]] = field(default_factory=list)
     actions: list[dict[str, object]] = field(default_factory=list)
     llm_calls: list[dict[str, object]] = field(default_factory=list)
+    seat_models: list[dict[str, str]] = field(default_factory=list)
+    leaks: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,11 +75,13 @@ class GameResult:
             "preset": self.preset,
             "seed": self.seed,
             "roles": self.roles,
+            "seat_models": self.seat_models,
             "rules": self.rules,
             "observer": self.observer,
             "transitions": self.transitions,
             "actions": self.actions,
             "llm_calls": self.llm_calls,
+            "leaks": self.leaks,
             "sessions": [
                 {
                     "channel": session.channel,
@@ -91,7 +97,7 @@ class GameResult:
 
 def build_players(
     machine: GameMachine,
-    model_client: ChatCompletionClient,
+    model_client: ChatCompletionClient | Mapping[str, ChatCompletionClient],
 ) -> tuple[dict[str, SeatAgent], dict[str, str]]:
     wolf_ids = [player.id for player in machine.wolves(alive_only=False)]
     agents: dict[str, SeatAgent] = {}
@@ -100,9 +106,10 @@ def build_players(
         teammates = [wolf_id for wolf_id in wolf_ids if wolf_id != player.id] if player.is_wolf else []
         prompt = system_prompt(player, teammates, machine.rules.max_speech_chars)
         prompts[player.id] = prompt
+        client = model_client[player.id] if isinstance(model_client, Mapping) else model_client
         inner = AssistantAgent(
             name=player.id,
-            model_client=model_client,
+            model_client=client,
             system_message=prompt,
             description=f"{player.label} 的座位",
         )
@@ -123,6 +130,8 @@ class GodDirector:
         max_nights: int = 12,
         printer: Printer = print,
         llm_calls: list[dict[str, object]] | None = None,
+        seat_models: list[dict[str, str]] | None = None,
+        emit: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         if talk_rounds < 1 or wolf_rounds < 1:
             raise ValueError("发言轮数至少为 1")
@@ -138,11 +147,21 @@ class GodDirector:
         self.observer: list[str] = []
         self.action_logs: list[ActionRecord] = []
         self.llm_calls = llm_calls if llm_calls is not None else []
+        self.seat_models = seat_models if seat_models is not None else []
+        self.leaks: list[dict[str, object]] = []
+        self.emit = emit
         self._wolf_archive = ""
 
     async def play(self) -> GameResult:
         self._observer(self.machine.roster_text())
+        if self.seat_models:
+            lines = ["模型分配（只写在裁判记录里）:"]
+            lines.extend(
+                f"- {item['player_id']}：{item['label']} / {item['model']}" for item in self.seat_models
+            )
+            self._observer("\n".join(lines))
         self._observer("本局规则：" + str(self.machine.rules.to_dict()))
+        self._emit("table", players=self._table_players())
         self.machine.update_winner()
         while self.machine.winner is None and self.machine.night_number < self.max_nights:
             await self._night()
@@ -155,11 +174,14 @@ class GodDirector:
             self._observer("到达夜数上限，本局记为平局。")
         if self.machine.public_queue:
             self._observer("未再宣读的公开结算：\n" + "\n".join(self.machine.public_queue))
-        self._observer(self._summary())
+        summary = self._summary()
+        self._observer(summary)
+        self._emit("winner", winner=self.machine.winner or "draw", summary=summary)
         return self._result()
 
     async def _night(self) -> None:
         night = self.machine.begin_night()
+        self._emit("phase", phase="night", night=night, title=f"第{night}夜", detail="天黑请闭眼。")
         await self._guard_phase(night)
         await self._wolf_phase(night)
         await self._witch_phase(night)
@@ -167,7 +189,11 @@ class GodDirector:
         deaths, notes = self.machine.resolve_night()
         for note in notes:
             self._note(note)
+        for death in deaths:
+            self._emit_death(death)
         shots = await self._hunter_phase(deaths)
+        for shot in shots:
+            self._emit_death(shot)
         self.machine.dawn_text = render_morning(
             [(death.label, death.role_label) for death in deaths],
             [(death.label, death.role_label) for death in shots],
@@ -181,6 +207,7 @@ class GodDirector:
         living = self.machine.living_ids()
         if not living:
             return
+        self._emit("phase", phase="day", night=day, title=f"第{day}天", detail=self.machine.dawn_text)
         talk = public_talk_task(day, self.machine.dawn_text, living, self.machine.graveyard_text())
         talk_result = await self._run_group(
             "public",
@@ -197,8 +224,11 @@ class GodDirector:
             self._note(outcome.note)
         quote = ""
         if outcome.death is not None:
+            self._emit_death(outcome.death)
             quote = await self._last_words(outcome.death)
         shots = await self._hunter_phase([outcome.death] if outcome.death is not None else [])
+        for shot in shots:
+            self._emit_death(shot)
         proclamation = outcome.public + "".join(
             f"猎人开枪带走 {shot.label}，身份是{shot.role_label}。" for shot in shots
         )
@@ -379,10 +409,10 @@ class GodDirector:
             f"遗言 · {death.label}",
             allow_dead=True,
         )
-        try:
-            assert_public(raw)
-        except RuntimeError:
-            self._note("遗言含有私密标记，不写入公聊。")
+        hits = audit_leaks(raw)
+        if hits:
+            self._record_leak("last_words", death.player_id, hits)
+            self._note("遗言含有私密内容，不写入公聊。")
             return ""
         return f"{death.label} 的遗言：{raw}"
 
@@ -393,6 +423,7 @@ class GodDirector:
         self.printer("\n===== 状态机宣判（不开启聊天） =====")
         self.printer(text)
         self.printer("")
+        self._emit("announce", text=text)
         notice = UserMessage(content=text, source="God")
         for player_id in living:
             await self.agents[player_id].model_context.add_message(notice)
@@ -407,6 +438,7 @@ class GodDirector:
         allow_dead: bool = False,
     ) -> str:
         self._check_membership(channel, [player_id], allow_dead=allow_dead)
+        self._emit("channel", channel=channel, banner=banner, participants=[player_id])
         self.printer(f"\n===== 上帝单独询问 → {banner} =====")
         result = await self.agents[player_id].run(task=task)
         logged: list[dict[str, str]] = []
@@ -419,12 +451,14 @@ class GodDirector:
                 reply = message.content
             speaker = "上帝" if message.source == "user" else message.source
             self.printer(f"[{speaker}]\n{message.content.strip()}\n")
+            self._emit_speech(channel, message.source, message.content, banner)
         self.sessions.append(SessionLog(channel, banner, [player_id], logged, "solo"))
         return reply
 
     async def _run_group(self, channel: str, player_ids: list[str], task: str, banner: str, team: Any) -> list[dict[str, str]]:
         ordered = sorted(player_ids, key=seat_key)
         self._check_membership(channel, ordered, allow_dead=False)
+        self._emit("channel", channel=channel, banner=banner, participants=ordered)
         self.printer(f"\n===== 上帝切换频道 → {banner} =====")
         self.printer("参与: " + ", ".join(ordered))
         try:
@@ -438,7 +472,10 @@ class GodDirector:
             logged.append({"source": message.source, "content": message.content})
             speaker = "上帝" if message.source == "user" else message.source
             self.printer(f"[{speaker}]\n{message.content.strip()}\n")
+            self._emit_speech(channel, message.source, message.content, banner)
         self.sessions.append(SessionLog(channel, banner, ordered, logged, "group"))
+        if channel == "public":
+            self._audit_public(logged)
         return logged
 
     def _settle(self, player_id: str, phase: str, raw: str, legal_ids: list[str]) -> tuple[str | None, ActionRecord]:
@@ -482,6 +519,70 @@ class GodDirector:
             if channel in expected and player.role != expected[channel]:
                 raise RuntimeError(f"{player_id} 的身份不是 {role_label(expected[channel])}")
 
+    def _emit(self, kind: str, **payload: object) -> None:
+        if self.emit is not None:
+            self.emit(kind, payload)
+
+    def _emit_speech(self, channel: str, source: str, content: str, banner: str) -> None:
+        if source in {"user", "God"}:
+            return
+        self._emit(
+            "speak",
+            channel=channel,
+            source=source,
+            content=content,
+            banner=banner,
+            private=channel not in {"public", "last_words"},
+        )
+
+    def _emit_death(self, death: Death) -> None:
+        self._emit(
+            "death",
+            player_id=death.player_id,
+            label=death.label,
+            role_label=death.role_label,
+            cause=death.cause,
+        )
+
+    def _table_players(self) -> list[dict[str, object]]:
+        by_vendor = {item["player_id"]: item for item in self.seat_models}
+        rows: list[dict[str, object]] = []
+        for player in self.machine.players:
+            vendor = by_vendor.get(player.id, {})
+            rows.append(
+                {
+                    "id": player.id,
+                    "label": player.label,
+                    "role": player.role.value,
+                    "role_label": role_label(player.role),
+                    "alive": player.alive,
+                    "vendor_id": vendor.get("id", ""),
+                    "vendor_label": vendor.get("label", ""),
+                    "model": vendor.get("model", ""),
+                }
+            )
+        return rows
+
+    def _audit_public(self, messages: list[dict[str, str]]) -> None:
+        speeches = [message for message in messages if message["source"] not in {"user", "God"}]
+        found = 0
+        for message in speeches:
+            hits = audit_leaks(message["content"])
+            if not hits:
+                continue
+            found += 1
+            self._record_leak("public", message["source"], hits)
+            self._note(f"公聊泄漏：{message['source']} 命中 {'、'.join(hits)}")
+        if not speeches:
+            return
+        summary = f"公聊泄漏检查：{len(speeches)} 条发言，泄漏 {found} 条。"
+        self._note(summary)
+        self._emit("audit", source="", hits=[], summary=summary, checked=len(speeches), found=found)
+
+    def _record_leak(self, channel: str, source: str, hits: list[str]) -> None:
+        self.leaks.append({"channel": channel, "source": source, "hits": hits})
+        self._emit("audit", source=source, hits=hits, channel=channel, summary="")
+
     def _note(self, text: str) -> None:
         self._observer(f"【裁判】{text}")
 
@@ -515,6 +616,8 @@ class GodDirector:
             transitions=list(self.machine.transitions),
             actions=[record.to_dict() for record in self.action_logs],
             llm_calls=self.llm_calls,
+            seat_models=list(self.seat_models),
+            leaks=list(self.leaks),
         )
 
 
@@ -546,32 +649,44 @@ async def play_match(
     talk_rounds: int,
     wolf_rounds: int,
     rules: Rules | None = None,
+    vendors: list[Vendor] | None = None,
     printer: Printer = print,
+    emit: Callable[[str, dict[str, object]], None] | None = None,
+    keys: dict[str, str] | None = None,
+    assignment: dict[str, Vendor] | None = None,
 ) -> GameResult:
+    del model, api_key, base_url
     rules = rules or Rules()
     machine = GameMachine.deal(preset, seed, rules)
+    catalog = vendors if vendors is not None else default_vendors()
+    if assignment is None:
+        assignment = assign_vendors([player.id for player in machine.players], catalog, seed)
+    elif set(assignment) != {player.id for player in machine.players}:
+        raise ValueError("座位和模型没有对齐")
+    seat_models = [
+        {"player_id": player_id, **vendor.public_dict()} for player_id, vendor in assignment.items()
+    ]
     calls: list[dict[str, object]] = []
-    client = build_traced_client(
-        mock=mock,
-        model=model,
-        speech_model=rules.speech_model,
-        decision_model=rules.decision_model,
-        api_key=api_key,
-        base_url=base_url,
-        sink=calls,
-    )
+    owned: list[Any] = []
     try:
-        agents, prompts = build_players(machine, client)
+        clients, owned = await build_seat_clients(assignment, mock=mock, sink=calls, keys=keys)
+        if keys is not None:
+            keys.clear()
+        agents, prompts = build_players(machine, clients)
         director = GodDirector(
             machine,
             agents,
             prompts,
-            client,
+            clients[machine.players[0].id],
             talk_rounds=talk_rounds,
             wolf_rounds=wolf_rounds,
             printer=printer,
             llm_calls=calls,
+            seat_models=seat_models,
+            emit=emit,
         )
         return await director.play()
     finally:
-        await client.close()
+        if keys is not None:
+            keys.clear()
+        await close_clients(owned)

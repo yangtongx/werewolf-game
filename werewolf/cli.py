@@ -13,6 +13,7 @@ from pathlib import Path
 from werewolf.director import play_match
 from werewolf.machine import PRESETS
 from werewolf.rules import load_rules
+from werewolf.vendors import load_vendors
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -26,14 +27,27 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--mock", action="store_true", help="不调用模型，用确定性发言跑完整局")
     parser.add_argument("--preset", default="classic6", choices=sorted(PRESETS))
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        help="保留参数。玩家模型改由 config.yaml 的 vendors 按人数洗牌",
+    )
     parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL") or None)
     parser.add_argument("--talk-rounds", type=int, default=1, help="白天每人发言几轮")
     parser.add_argument("--wolf-rounds", type=int, default=2, help="夜里每个狼人发言几轮")
     parser.add_argument("--config", default="config.yaml", help="牌规、字数和模型分级。文件不存在时用默认规则")
     parser.add_argument("--log", default="logs/latest.json", help="对局记录。空字符串表示不写文件")
+    parser.add_argument("--web", action="store_true", help="打开牌桌页面，而不是直接跑一局")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
+    if args.web:
+        from werewolf.web import serve
+
+        serve(args.host, args.port, args.config)
+        return
     rules = load_rules(args.config)
+    vendors = load_vendors(args.config)
 
     result = asyncio.run(
         play_match(
@@ -46,6 +60,7 @@ def main(argv: list[str] | None = None) -> None:
             talk_rounds=args.talk_rounds,
             wolf_rounds=args.wolf_rounds,
             rules=rules,
+            vendors=vendors,
         )
     )
     if args.log:

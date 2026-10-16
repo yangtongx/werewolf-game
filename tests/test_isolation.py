@@ -6,7 +6,7 @@ from autogen_core.models import AssistantMessage, SystemMessage, UserMessage
 from werewolf.director import GodDirector, build_players, play_match
 from werewolf.machine import CAUSE_POISON, GameMachine, Role
 from werewolf.model_client import ScriptedWerewolfClient
-from werewolf.prompts import PRIVATE_MARKERS, assert_public
+from werewolf.prompts import PRIVATE_MARKERS, assert_public, audit_leaks
 
 
 class ChannelIsolationTests(unittest.IsolatedAsyncioTestCase):
@@ -139,6 +139,31 @@ class ChannelIsolationTests(unittest.IsolatedAsyncioTestCase):
         )
         ballot = await client.create([system, old_result, remembered, vote])
         self.assertIn("[ACTION] vote=p2", str(ballot.content))
+
+        wolf = SystemMessage(content="你的座位: p5\n你的身份: werewolf\n狼队友: p2\n")
+        day = UserMessage(
+            content="【频道：全体公聊】\n第2天。\n在场: p1, p2, p5, p6\n环节: 发言\n",
+            source="user",
+        )
+        hidden = await client.create([wolf, day])
+        self.assertIn("不亮身份", str(hidden.content))
+        self.assertNotIn("跳预言家", str(hidden.content))
+        seer_claim = UserMessage(content="我是真预言家。p1是好人。谁再跳预言家，今天就对跳。", source="p6")
+        counter = await client.create([wolf, seer_claim, day])
+        self.assertIn("我跳预言家", str(counter.content))
+        mate_claim = UserMessage(content="我跳预言家。昨晚验了p4，是狼人。", source="p2")
+        stayed = await client.create([wolf, seer_claim, mate_claim, day])
+        self.assertIn("不亮身份", str(stayed.content))
+        self.assertNotIn("我跳预言家", str(stayed.content))
+
+        night = UserMessage(content="【频道：狼人群】\n在场: p1, p2, p5\n环节: 夜间\n", source="user")
+        knife = SystemMessage(content="你的座位: p2\n你的身份: werewolf\n狼队友: p5\n")
+        ordinary = await client.create([knife, night])
+        self.assertIn("[ACTION] kill=p1", str(ordinary.content))
+        accused = UserMessage(content="我是真预言家。p5是狼人。", source="p6")
+        own_goal = await client.create([knife, accused, night])
+        self.assertIn("[ACTION] kill=p5", str(own_goal.content))
+        self.assertIn("（狼队密谈）", str(own_goal.content))
         await client.close()
 
     async def test_classic9_finishes_with_hunter_channel_closed(self) -> None:
@@ -253,10 +278,53 @@ class ChannelIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.transitions)
         self.assertTrue(result.actions)
         self.assertTrue(result.llm_calls)
+        self.assertEqual(len(result.seat_models), 6)
+        vendor_ids = {item["id"] for item in result.seat_models}
+        self.assertEqual(len(vendor_ids), 6)
+        self.assertIn(result.llm_calls[0]["route"], vendor_ids)
+        self.assertTrue(any("模型分配" in line for line in result.observer))
+        for session in result.sessions:
+            blob = "\n".join(message["content"] for message in session.messages)
+            self.assertNotIn("模型分配", blob)
         call = result.llm_calls[0]
         for key in ("route", "latency_ms", "prompt_tokens", "completion_tokens", "prompt", "response"):
             self.assertIn(key, call)
         self.assertTrue(any("raw" in record and "degraded" in record for record in result.actions))
+        self.assertEqual(result.leaks, [])
+        self.assertTrue(any("泄漏 0 条" in line for line in result.observer))
+        spoken = [
+            message["content"]
+            for session in result.sessions
+            if session.channel == "public" and session.kind == "group"
+            for message in session.messages
+            if message["source"] != "user"
+        ]
+        self.assertTrue(spoken)
+        self.assertTrue(any("不亮身份" in line for line in spoken))
+        for line in spoken:
+            self.assertNotIn("先听发言", line)
+            self.assertNotIn("暂不站边", line)
+            self.assertEqual(audit_leaks(line), [])
+
+    async def test_public_leak_is_recorded_and_left_in_the_chat(self) -> None:
+        machine = GameMachine.deal("classic6", seed=7)
+        client = _LeakyClient()
+        agents, _prompts = build_players(machine, client)
+        director = GodDirector(machine, agents, {}, client, talk_rounds=1, wolf_rounds=1, printer=lambda _line: None)
+        result = await director.play()
+        await client.close()
+        self.assertTrue(result.leaks)
+        self.assertTrue(all(item["channel"] == "public" for item in result.leaks))
+        self.assertIn("狼队友:", _blob(result, "public"))
+        self.assertTrue(any("公聊泄漏：" in line for line in result.observer))
+
+
+class _LeakyClient(ScriptedWerewolfClient):
+    def _reply(self, messages):
+        content = super()._reply(messages)
+        if content.startswith("我先不亮身份"):
+            return content + "\n狼队友: p9"
+        return content
 
 
 def _utterances(result, channel: str, speakers: set[str]) -> list[str]:
